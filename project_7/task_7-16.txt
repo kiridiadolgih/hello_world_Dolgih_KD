@@ -1,0 +1,159 @@
+import psycopg2
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+DB_CONFIG = {
+    'host': 'localhost',
+    'port': 5433,
+    'database': 'testdb',
+    'user': 'postgres',
+    'password': 'example'
+}
+
+def main():
+    conn = psycopg2.connect(**DB_CONFIG)
+    
+    df_courses = pd.read_sql("""
+        SELECT c.course_name, ROUND(AVG(e.grade)::numeric, 2) as avg_grade, COUNT(e.enrollment_id) as total
+        FROM enrollments e
+        JOIN courses c ON e.course_id = c.course_id
+        GROUP BY c.course_name
+        ORDER BY avg_grade DESC
+    """, conn)
+    
+    df_grades = pd.read_sql("""
+        SELECT c.course_name, e.grade
+        FROM enrollments e
+        JOIN courses c ON e.course_id = c.course_id
+        ORDER BY c.course_name
+    """, conn)
+    
+    df_years = pd.read_sql("""
+        SELECT enrollment_year, COUNT(student_id) as count
+        FROM students
+        GROUP BY enrollment_year
+        ORDER BY enrollment_year
+    """, conn)
+    
+    df_missing = pd.read_sql("""
+        SELECT s.first_name || ' ' || s.last_name as student
+        FROM students s
+        LEFT JOIN enrollments e ON s.student_id = e.student_id
+        WHERE e.enrollment_id IS NULL
+    """, conn)
+    
+    conn.close()
+    
+    courses_list = df_grades['course_name'].unique()
+    grades_list = [df_grades[df_grades['course_name'] == c]['grade'].values for c in courses_list]
+    
+    all_grades = df_grades['grade'].values
+    mean_grade = np.mean(all_grades)
+    median_grade = np.median(all_grades)
+    q1 = np.percentile(all_grades, 25)
+    q3 = np.percentile(all_grades, 75)
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    outliers = [g for g in all_grades if g < lower_bound or g > upper_bound]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Анализ учебной базы данных', fontsize=16, fontweight='bold')
+    
+    ax1 = axes[0, 0]
+    colors = ['#d9534f' if x < 4.0 else '#5cb85c' for x in df_courses['avg_grade']]
+    bars = ax1.barh(df_courses['course_name'], df_courses['avg_grade'], color=colors, height=0.6)
+    for bar, val in zip(bars, df_courses['avg_grade']):
+        ax1.text(bar.get_width() + 0.05, bar.get_y() + bar.get_height()/2, f'{val:.2f}', va='center', fontsize=9)
+    ax1.axvline(mean_grade, color='orange', linestyle='--', linewidth=1.5, label=f'Среднее: {mean_grade:.2f}')
+    ax1.set_xlim(2.5, 5.5)
+    ax1.set_xlabel('Средний балл')
+    ax1.set_title('Средний балл по курсам', fontweight='bold')
+    ax1.legend(fontsize=9)
+    
+    ax2 = axes[0, 1]
+    bp = ax2.boxplot(grades_list, labels=courses_list, patch_artist=True, showmeans=True, meanline=True, meanprops={'linestyle': '--', 'color': 'green'})
+    for patch in bp['boxes']:
+        patch.set_facecolor('#5bc0de')
+        patch.set_alpha(0.7)
+    ax2.axhline(median_grade, color='orange', linestyle='--', linewidth=1.5, label=f'Медиана всех: {median_grade:.0f}')
+    ax2.set_ylabel('Оценка')
+    ax2.set_title('Распределение оценок по курсам (Boxplot)', fontweight='bold')
+    ax2.tick_params(axis='x', rotation=45, labelsize=8)
+    ax2.legend(fontsize=9)
+    ax2.set_ylim(1.5, 5.5)
+    
+    ax3 = axes[1, 0]
+    bars3 = ax3.bar(df_courses['course_name'], df_courses['total'], color='#5cb85c', edgecolor='white', width=0.6)
+    for bar in bars3:
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.2, str(int(bar.get_height())), ha='center', fontsize=9)
+    ax3.set_ylabel('Количество студентов')
+    ax3.set_title('Популярность курсов', fontweight='bold')
+    ax3.tick_params(axis='x', rotation=45, labelsize=8)
+    
+    ax4 = axes[1, 1]
+    labels = [f'{row["enrollment_year"]} г. ({row["count"]} чел.)' for _, row in df_years.iterrows()]
+    wedges, _, autotexts = ax4.pie(df_years['count'], labels=None, autopct='%1.0f%%', colors=['#7b68ee', '#4a90d9', '#2ecc71'], startangle=90)
+    for autotext in autotexts:
+        autotext.set_fontsize(10)
+        autotext.set_fontweight('bold')
+
+
+ax4.set_title('Студенты по году поступления', fontweight='bold')
+    ax4.legend(wedges, labels, loc='lower center', bbox_to_anchor=(0.5, -0.15), fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig('student_charts.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    
+    print("\n" + "="*70)
+    print("СТАТИСТИЧЕСКИЕ МЕТРИКИ")
+    print("="*70)
+    
+    print("\n1. ОЦЕНКИ СТУДЕНТОВ:")
+    print(f"   Среднее арифметическое: {mean_grade:.2f}")
+    print(f"   Медиана: {median_grade:.0f}")
+    print(f"   Q1 (25-й перцентиль): {q1:.0f}")
+    print(f"   Q3 (75-й перцентиль): {q3:.0f}")
+    print(f"   IQR (межквартильный размах): {iqr:.1f}")
+    print(f"   Минимум: {np.min(all_grades)}")
+    print(f"   Максимум: {np.max(all_grades)}")
+    print(f"   Стандартное отклонение: {np.std(all_grades):.2f}")
+    
+    print("\n2. ВЫБРОСЫ (правило 1.5 * IQR):")
+    print(f"   Нижняя граница: {lower_bound:.1f}")
+    print(f"   Верхняя граница: {upper_bound:.1f}")
+    if outliers:
+        print(f"   Обнаружены выбросы: {sorted(set(outliers))}")
+        for o in sorted(set(outliers)):
+            print(f"      Оценка {o}: встречается {outliers.count(o)} раз(а)")
+    else:
+        print("   Выбросов не обнаружено")
+    
+    print("\n3. ПОПУЛЯРНОСТЬ КУРСОВ:")
+    print(f"   Среднее: {df_courses['total'].mean():.1f}")
+    print(f"   Медиана: {df_courses['total'].median():.0f}")
+    print(f"   Самый популярный: {df_courses.loc[df_courses['total'].idxmax(), 'course_name']} ({df_courses['total'].max()} чел.)")
+    print(f"   Самый непопулярный: {df_courses.loc[df_courses['total'].idxmin(), 'course_name']} ({df_courses['total'].min()} чел.)")
+    
+    print("\n4. СТУДЕНТЫ ПО ГОДАМ:")
+    print(f"   Среднее: {df_years['count'].mean():.1f}")
+    print(f"   Медиана: {df_years['count'].median():.0f}")
+    growth = ((df_years[df_years['enrollment_year']==2025]['count'].values[0] - df_years[df_years['enrollment_year']==2023]['count'].values[0]) / df_years[df_years['enrollment_year']==2023]['count'].values[0] * 100)
+    print(f"   Рост набора 2023→2025: +{growth:.0f}%")
+    
+    print("\n5. АНОМАЛИИ В ДАННЫХ:")
+    if len(df_missing) > 0:
+        print(f"   Обнаружено {len(df_missing)} студентов без оценок:")
+        for _, row in df_missing.iterrows():
+            print(f"     - {row['student']}")
+    else:
+        print("   Все студенты имеют оценки - аномалий нет")
+    
+    print("\n" + "="*70)
+    print("График сохранён как 'student_charts.png'")
+    print("="*70)
+
+if __name__ == "__main__":
+    main()
