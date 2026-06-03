@@ -1,0 +1,114 @@
+import psycopg2
+import pandas as pd
+import numpy as np
+
+DB_CONFIG = {
+    'host': 'localhost',
+    'port': 5432,
+    'database': 'your_database_name',
+    'user': 'your_username',
+    'password': 'your_password'
+}
+
+def get_data():
+    query = """
+        SELECT 
+            p.id AS product_id,
+            p.name AS product_name,
+            p.category,
+            pr.price,
+            pr.created_at
+        FROM products p
+        JOIN prices pr ON p.id = pr.product_id
+    """
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
+    except Exception as e:
+        print(f"Ошибка подключения к БД: {e}")
+        exit(1)
+
+def analyze_prices(df):
+    print("\n3. Общая статистика цен (в рублях):")
+    mean_val = df['price'].mean()
+    median_val = df['price'].median()
+    std_val = df['price'].std()
+    min_val = df['price'].min()
+    max_val = df['price'].max()
+    
+    print(f"Среднее значение:      {mean_val:,.2f} руб.")
+    print(f"Медиана:               {median_val:,.2f} руб.")
+    print(f"Стандартное отклонение: {std_val:,.2f} руб.")
+    print(f"Минимальная цена:      {min_val:,.2f} руб.")
+    print(f"Максимальная цена:     {max_val:,.2f} руб.")
+
+def quartiles_and_outliers(df):
+    print("\n4. Квартили и товары с ценой выше Q3")
+    q1 = df['price'].quantile(0.25)
+    q2 = df['price'].median()
+    q3 = df['price'].quantile(0.75)
+    iqr = q3 - q1
+    
+    print(f"Первый квартиль (Q1):  {q1:,.2f} руб.")
+    print(f"Второй квартиль (Q2):  {q2:,.2f} руб.")
+    print(f"Третий квартиль (Q3):  {q3:,.2f} руб.")
+    print(f"Межквартильный размах (IQR): {iqr:,.2f} руб.")
+    
+    high_prices = df[df['price'] > q3]
+    if not high_prices.empty:
+        print("\nТовары, цена которых превышает Q3:")
+        for _, row in high_prices.iterrows():
+            print(f"  {row['product_name']} (категория: {row['category']}) — {row['price']:,.2f} руб.")
+    else:
+        print("\nНет товаров с ценой выше Q3.")
+
+def group_by_category(df):
+    print("\n5. Статистика цен по категориям (отсортировано по убыванию средней цены)")
+    grouped = df.groupby('category')['price'].agg(
+        count='count',
+        mean='mean',
+        median='median',
+        std='std'
+    ).round(2).reset_index()
+    grouped_sorted = grouped.sort_values('mean', ascending=False)
+    
+    for _, row in grouped_sorted.iterrows():
+        print(f"\nКатегория: {row['category']}")
+        print(f"  Количество записей о ценах: {row['count']}")
+        print(f"  Средняя цена:               {row['mean']:,.2f} руб.")
+        print(f"  Медиана:                    {row['median']:,.2f} руб.")
+        print(f"  Стандартное отклонение:     {row['std']:,.2f} руб.")
+
+def top_price_variability(df):
+    print("\n6. Топ-5 товаров с наибольшим разбросом цен (max - min)")
+    price_range = df.groupby(['product_id', 'product_name', 'category'])['price'].agg(
+        min_price='min',
+        max_price='max'
+    ).reset_index()
+    price_range['range'] = price_range['max_price'] - price_range['min_price']
+    top5 = price_range.sort_values('range', ascending=False).head(5)
+    
+    for _, row in top5.iterrows():
+        print(f"\nТовар: {row['product_name']} (категория: {row['category']})")
+        print(f"  Минимальная цена: {row['min_price']:,.2f} руб.")
+        print(f"  Максимальная цена: {row['max_price']:,.2f} руб.")
+        print(f"  Разница (max - min): {row['range']:,.2f} руб.")
+
+def main():
+    print("Загрузка данных из базы...")
+    df = get_data()
+    print(f"Загружено записей: {len(df)}")
+    
+    if df.empty:
+        print("Нет данных для анализа.")
+        return
+    
+    analyze_prices(df)
+    quartiles_and_outliers(df)
+    group_by_category(df)
+    top_price_variability(df)
+
+if __name__ == "__main__":
+    main()
