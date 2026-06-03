@@ -1,0 +1,5 @@
+SELECT * FROM prices WHERE price BETWEEN 1000 AND 50000;
+
+SELECT * FROM prices WHERE price BETWEEN 500 AND 70000 AND product_id <= 5;
+
+SELECT * FROM prices WHERE price < 100 OR (price BETWEEN 60000 AND 70000)
